@@ -9,7 +9,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | Milestone | Scope | Status |
 |---|---|---|
 | v1 | Repo scaffold, CMake, GPT-2 weight export + reference outputs | done |
-| v2 | Tensor utilities, weight loader, naive matmul | |
+| v2 | Tensor utilities, weight loader, naive matmul | done |
 | v3 | Full GPT-2 forward pass, logits match Hugging Face | |
 | v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | |
 | v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | |

@@ -12,7 +12,14 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
-add_library(tinyinfer_core STATIC src/version.cpp)
+add_library(tinyinfer_core STATIC
+  src/version.cpp
+  src/tensor.cpp
+  src/tinf.cpp
+  src/gpt2.cpp
+  src/ops.cpp
+  src/matmul.cpp
+)
 target_include_directories(tinyinfer_core PUBLIC src)
 
 add_executable(tinyinfer src/main.cpp)
@@ -28,4 +35,11 @@ foreach(src ${TEST_SOURCES})
   target_link_libraries(${name} PRIVATE tinyinfer_core)
   target_compile_definitions(${name} PRIVATE TINYINFER_MODEL_DIR="${TINYINFER_MODEL_DIR}")
   add_test(NAME ${name} COMMAND ${name})
+endforeach()
+
+file(GLOB BENCH_SOURCES CONFIGURE_DEPENDS bench/bench_*.cpp)
+foreach(src ${BENCH_SOURCES})
+  get_filename_component(name ${src} NAME_WE)
+  add_executable(${name} ${src})
+  target_link_libraries(${name} PRIVATE tinyinfer_core)
 endforeach()
