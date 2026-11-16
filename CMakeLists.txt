@@ -19,6 +19,7 @@ add_library(tinyinfer_core STATIC
   src/gpt2.cpp
   src/ops.cpp
   src/matmul.cpp
+  src/attention.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
 
