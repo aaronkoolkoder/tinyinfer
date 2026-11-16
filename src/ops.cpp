@@ -90,8 +90,9 @@ void gqa_attention(float* out, const float* q, const float* k_cache, const float
                    int64_t H, int64_t KVH, int64_t D, int64_t max_seq) {
     const int64_t group = H / KVH;
     const float scale = 1.0f / std::sqrt(static_cast<float>(D));
-    std::vector<float> scores(pos + T);
+#pragma omp parallel for schedule(dynamic, 1) if (pos + T > 64)
     for (int64_t h = 0; h < H; ++h) {
+        std::vector<float> scores(pos + T);
         const float* kh = k_cache + (h / group) * max_seq * D;
         const float* vh = v_cache + (h / group) * max_seq * D;
         for (int64_t t = 0; t < T; ++t) {

@@ -20,6 +20,22 @@ Tensor take(const TinfFile& f, const std::string& name, std::vector<int64_t> sha
     return t;
 }
 
+// Stacks row-major [rows_i, C] matrices into one [sum rows_i, C] tensor.
+Tensor stack_rows(std::initializer_list<const Tensor*> parts) {
+    int64_t rows = 0, cols = (*parts.begin())->dim(-1);
+    for (const Tensor* p : parts) rows += p->ndim() == 1 ? 1 : p->dim(0);
+    const bool vector = (*parts.begin())->ndim() == 1;
+    Tensor out(vector ? std::vector<int64_t>{0} : std::vector<int64_t>{rows, cols});
+    if (vector) {
+        int64_t n = 0;
+        for (const Tensor* p : parts) n += p->numel();
+        out = Tensor({n});
+    }
+    float* dst = out.f32();
+    for (const Tensor* p : parts) dst = std::copy(p->f32(), p->f32() + p->numel(), dst);
+    return out;
+}
+
 // k, v: [T, KV*D] -> cache [KV, max_seq, D] at positions pos..pos+T-1
 void append_kv(float* k_cache, float* v_cache, const float* k, const float* v, int64_t pos, int64_t T,
                int64_t n_kv, int64_t D, int64_t max_seq) {
@@ -70,6 +86,9 @@ LlamaModel LlamaModel::load(const TinfFile& f) {
         L.w_gate = take(f, p + "w_gate", {F, C});
         L.w_up = take(f, p + "w_up", {F, C});
         L.w_down = take(f, p + "w_down", {C, F});
+        L.wqkv = stack_rows({&L.wq, &L.wk, &L.wv});
+        if (c.attn_bias) L.bqkv = stack_rows({&L.bq, &L.bk, &L.bv});
+        L.w_gate_up = stack_rows({&L.w_gate, &L.w_up});
         m.layers.push_back(std::move(L));
     }
     m.norm = take(f, "norm", {C});
@@ -102,8 +121,9 @@ Tensor LlamaModel::forward(KVCache& cache, const int32_t* tokens, int64_t T, boo
     for (int64_t t = 0; t < T; ++t)
         if (tokens[t] < 0 || tokens[t] >= V) throw std::invalid_argument("token id out of range");
 
-    Tensor x({T, C}), h({T, C}), q({T, Q}), k({T, KV}), v({T, KV}), att({T, Q}), proj({T, C});
-    Tensor gate({T, F}), up({T, F});
+    const int64_t QKV = Q + 2 * KV;
+    Tensor x({T, C}), h({T, C}), qkv({T, QKV}), q({T, Q}), k({T, KV}), v({T, KV}), att({T, Q}), proj({T, C});
+    Tensor gate_up({T, 2 * F}), act({T, F});
 
     for (int64_t t = 0; t < T; ++t) {
         const float* e = embed.f32() + static_cast<int64_t>(tokens[t]) * C;
@@ -113,9 +133,13 @@ Tensor LlamaModel::forward(KVCache& cache, const int32_t* tokens, int64_t T, boo
     for (int64_t l = 0; l < c.n_layer; ++l) {
         const LlamaLayer& L = layers[l];
         rmsnorm(h.f32(), x.f32(), L.attn_norm.f32(), T, C, c.eps);
-        linear(q.f32(), h.f32(), L.wq.f32(), c.attn_bias ? L.bq.f32() : nullptr, T, Q, C);
-        linear(k.f32(), h.f32(), L.wk.f32(), c.attn_bias ? L.bk.f32() : nullptr, T, KV, C);
-        linear(v.f32(), h.f32(), L.wv.f32(), c.attn_bias ? L.bv.f32() : nullptr, T, KV, C);
+        linear(qkv.f32(), h.f32(), L.wqkv.f32(), c.attn_bias ? L.bqkv.f32() : nullptr, T, QKV, C);
+        for (int64_t t = 0; t < T; ++t) {
+            const float* row = qkv.f32() + t * QKV;
+            std::copy(row, row + Q, q.f32() + t * Q);
+            std::copy(row + Q, row + Q + KV, k.f32() + t * KV);
+            std::copy(row + Q + KV, row + QKV, v.f32() + t * KV);
+        }
         rope(q.f32(), T, H, D, pos, c.rope_theta);
         rope(k.f32(), T, KVH, D, pos, c.rope_theta);
 
@@ -127,10 +151,14 @@ Tensor LlamaModel::forward(KVCache& cache, const int32_t* tokens, int64_t T, boo
         add_inplace(x.f32(), proj.f32(), T * C);
 
         rmsnorm(h.f32(), x.f32(), L.ffn_norm.f32(), T, C, c.eps);
-        linear(gate.f32(), h.f32(), L.w_gate.f32(), nullptr, T, F, C);
-        linear(up.f32(), h.f32(), L.w_up.f32(), nullptr, T, F, C);
-        swiglu(gate.f32(), up.f32(), T * F);
-        linear(proj.f32(), gate.f32(), L.w_down.f32(), nullptr, T, C, F);
+        linear(gate_up.f32(), h.f32(), L.w_gate_up.f32(), nullptr, T, 2 * F, C);
+        for (int64_t t = 0; t < T; ++t) {
+            const float* g = gate_up.f32() + t * 2 * F;
+            float* a = act.f32() + t * F;
+            std::copy(g, g + F, a);
+            swiglu(a, g + F, F);
+        }
+        linear(proj.f32(), act.f32(), L.w_down.f32(), nullptr, T, C, F);
         add_inplace(x.f32(), proj.f32(), T * C);
     }
     cache.len += T;

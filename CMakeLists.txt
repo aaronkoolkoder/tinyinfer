@@ -12,6 +12,32 @@ endif()
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
+option(TINYINFER_NATIVE "Tune for the build machine's CPU" ON)
+if(TINYINFER_NATIVE)
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-mcpu=native HAS_MCPU_NATIVE)
+  if(HAS_MCPU_NATIVE)
+    add_compile_options(-mcpu=native)
+  else()
+    add_compile_options(-march=native)
+  endif()
+endif()
+
+option(TINYINFER_OPENMP "Multithread kernels with OpenMP" ON)
+if(TINYINFER_OPENMP)
+  if(APPLE AND NOT OpenMP_CXX_FLAGS)
+    # Apple clang ships without OpenMP; use Homebrew's libomp.
+    execute_process(COMMAND brew --prefix libomp OUTPUT_VARIABLE LIBOMP_PREFIX
+                    OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(LIBOMP_PREFIX)
+      set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I${LIBOMP_PREFIX}/include")
+      set(OpenMP_CXX_LIB_NAMES omp)
+      set(OpenMP_omp_LIBRARY "${LIBOMP_PREFIX}/lib/libomp.dylib")
+    endif()
+  endif()
+  find_package(OpenMP)
+endif()
+
 add_library(tinyinfer_core STATIC
   src/version.cpp
   src/tensor.cpp
@@ -19,6 +45,7 @@ add_library(tinyinfer_core STATIC
   src/gpt2.cpp
   src/ops.cpp
   src/matmul.cpp
+  src/kernels.cpp
   src/attention.cpp
   src/tokenizer.cpp
   src/generate.cpp
@@ -30,6 +57,9 @@ add_library(tinyinfer_core STATIC
   src/rope.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(tinyinfer_core PUBLIC OpenMP::OpenMP_CXX)
+endif()
 
 add_executable(tinyinfer src/main.cpp)
 target_link_libraries(tinyinfer PRIVATE tinyinfer_core)

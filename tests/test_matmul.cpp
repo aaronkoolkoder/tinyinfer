@@ -55,6 +55,34 @@ TEST(ones_input_sums_weight_rows) {
     }
 }
 
+// Shapes that hit every tail path of the tiled kernel.
+TEST(fast_matches_naive_on_odd_shapes) {
+    const int64_t shapes[][3] = {{1, 1, 1}, {1, 7, 3}, {3, 5, 17}, {4, 4, 4}, {5, 9, 33}, {13, 31, 70},
+                                 {1, 4099, 129}, {128, 300, 96}, {7, 1000, 768}};
+    for (const auto& sh : shapes) {
+        const int64_t M = sh[0], N = sh[1], K = sh[2];
+        Tensor x({M, K}), w({N, K}), fast({M, N}), ref({M, N});
+        fill_randn(x, M * 31 + N);
+        fill_randn(w, K * 17 + 3);
+        fill(fast, 1e6f);
+        matmul(fast.f32(), x.f32(), w.f32(), M, N, K);
+        matmul_naive(ref.f32(), x.f32(), w.f32(), M, N, K);
+        CHECK_NEAR(max_abs_diff(fast, ref), 0.0, 1e-3);
+    }
+}
+
+TEST(thread_count_does_not_change_results) {
+    const int64_t M = 9, N = 777, K = 300;
+    Tensor x({M, K}), w({N, K}), a({M, N}), b({M, N});
+    fill_randn(x, 1);
+    fill_randn(w, 2);
+    set_num_threads(1);
+    matmul(a.f32(), x.f32(), w.f32(), M, N, K);
+    set_num_threads(0);
+    matmul(b.f32(), x.f32(), w.f32(), M, N, K);
+    CHECK(max_abs_diff(a, b) == 0.0f);
+}
+
 // The final hidden state times wte^T is exactly GPT-2's lm_head, so this
 // checks matmul against Hugging Face logits on real weights.
 TEST(gpt2_lm_head_matches_reference) {

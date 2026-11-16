@@ -9,6 +9,7 @@
 
 #include "generate.h"
 #include "model.h"
+#include "ops.h"
 #include "tokenizer.h"
 #include "version.h"
 
@@ -23,6 +24,7 @@ struct Args {
     bool stop_at_eos = true;
     bool use_cache = true;
     bool chat = false;
+    int threads = 8;
     bool seed_given = false;
     SamplingParams sampling;
 };
@@ -42,6 +44,7 @@ void usage() {
         "      --ignore-eos    keep generating past <|endoftext|>\n"
         "      --no-cache      disable the KV cache (rerun the full sequence every step)\n"
         "      --chat          wrap the prompt in the ChatML template (instruct models)\n"
+        "  -j, --threads N     worker threads (default 8)\n"
         "  -h, --help\n",
         version());
 }
@@ -70,6 +73,7 @@ Args parse(int argc, char** argv) {
         else if (arg == "--ignore-eos") a.stop_at_eos = false;
         else if (arg == "--no-cache") a.use_cache = false;
         else if (arg == "--chat") a.chat = true;
+        else if (arg == "-j" || arg == "--threads") a.threads = std::stoi(value());
         else if (arg == "-h" || arg == "--help") {
             usage();
             std::exit(0);
@@ -93,6 +97,7 @@ Args parse(int argc, char** argv) {
 int main(int argc, char** argv) {
     try {
         Args args = parse(argc, argv);
+        set_num_threads(args.threads);
         std::unique_ptr<Model> model = Model::load(args.model_dir);
         Tokenizer tok = Tokenizer::load(args.model_dir);
 

@@ -1,8 +1,12 @@
 # tinyinfer
 
-A transformer inference runtime written from scratch in C++17. Runs GPT-2 and Llama-style models (tested on Qwen2.5-0.5B-Instruct). No PyTorch, no BLAS, no ML libraries in the runtime. Python is only used to export weights and produce reference outputs.
+A transformer inference runtime written from scratch in C++17. Runs GPT-2 and Llama-style models (tested on Qwen2.5-0.5B-Instruct) with a KV cache, sampling, and multithreaded SIMD kernels. No PyTorch, no BLAS, no ML libraries in the runtime; Python is only used to export weights and produce reference outputs.
 
-Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU performance pass. A CUDA backend comes later.
+Every model is checked against Hugging Face: logits within tolerance and greedy generation token for token.
+
+**Headline:** on Qwen2.5-0.5B-Instruct (F32, CPU only, Apple M5 Pro), tinyinfer decodes at **~100% of llama.cpp's speed** (98.6 vs 96.4 tok/s best-vs-best, 102–104% across two head-to-head runs) and prefills at **78–95%** of llama.cpp, which hands prefill matmuls to Apple Accelerate. See [Performance](#performance-v8).
+
+![tinyinfer vs llama.cpp](bench/results/compare.png)
 
 ## Roadmap
 
@@ -15,7 +19,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | done |
 | v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | done |
 | v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | done |
-| v8 | CPU performance: OpenMP, cache-friendly layouts, benchmark tables and charts | |
+| v8 | CPU performance: OpenMP, NEON kernels, fused matmuls, benchmarks vs llama.cpp | done |
 | v9+ | CUDA backend | |
 
 ## Layout
@@ -61,6 +65,59 @@ Chat with the instruct model:
 ```bash
 ./build/tinyinfer -m models/qwen2.5-0.5b --chat -p "Explain what a KV cache is in one sentence." --temp 0.7 --top-p 0.9
 ```
+
+## Performance (v8)
+
+### What changed
+
+| Change | Why it matters |
+|---|---|
+| NEON matmul with register tiling (`src/kernels.cpp`) | 4x4 tiles of x rows by weight rows keep 16 accumulators in registers: 16 FMAs per 8 loads. Decode uses a 1x4 variant that loads x once per step. |
+| OpenMP over output rows, dynamic scheduling | Apple chips mix performance and efficiency cores; small chunks let fast cores take more work instead of waiting at the barrier. |
+| Threads spin between parallel regions | Decode launches ~100 small matmuls per token. With libomp's default, parked threads took ~60 µs to wake for a matmul that needs 4 µs. Spinning cut a 128x896 matmul at 10 threads from 61 µs to 7 µs. |
+| Fewer threads for small matmuls | Roughly one thread per MiB of weights, so a 0.5 MiB projection does not wake 12 cores. |
+| Fused Q/K/V and gate/up weights | 7 matmuls per layer become 4, fewer synchronization points per token. |
+
+The original single-threaded naive matmul stays as `matmul_naive`, the reference the fast kernel is tested against on shapes that hit every tail path.
+
+### Results vs llama.cpp
+
+Same model, same F32 weights (official Qwen GGUF expanded with `llama-quantize ... F32`), `llama-bench -dev none -ngl 0` for CPU only, and `bench_model`, which measures the same two things: `pp128` processes a 128-token prompt in one batch, `tg64` decodes 64 tokens one at a time. Two back-to-back runs, 5 repetitions each ([run 1](bench/results/compare_run1.csv), [run 2](bench/results/compare.csv)):
+
+| test | tinyinfer best | llama.cpp best | run 1 | run 2 |
+|---|---:|---:|---:|---:|
+| decode tg64 | 98.6 tok/s (10 threads) | 96.4 tok/s (12 threads) | 104% | 102% |
+| prefill pp128 | 911 tok/s (12 threads) | 993 tok/s (5 threads) | 95% | 92% |
+
+llama.cpp varies run to run on this machine; a separate solo run reached 95.9 tok/s decode and 1164 tok/s prefill, which puts prefill at 78%. Decode stays at roughly parity in every run. llama.cpp's prefill uses Apple Accelerate (the CPU's matrix coprocessor); tinyinfer's is hand-written NEON.
+
+Reproduce with `scripts/bench_vs_llamacpp.sh` (needs `brew install llama.cpp`).
+
+GPT-2 small, same machine (`bench_model models/gpt2`):
+
+| | naive, no cache (v4) | naive + KV cache (v6) | v8, 8–10 threads |
+|---|---:|---:|---:|
+| decode | 0.87 tok/s | 19.6 tok/s | 331 tok/s |
+| prefill | ~27 tok/s | ~27 tok/s | 1441 tok/s |
+
+### Why decode is memory-bandwidth bound
+
+Each decode step multiplies one token's activations (a vector) by every weight matrix in the model. Every weight is read from memory once and used for exactly one multiply-add:
+
+- Bytes per token: all of Qwen2.5-0.5B's weights, 1.98 GB in F32 (the tied embedding is read in full as the output head).
+- FLOPs per token: about 2 per weight, so ~1 GFLOP.
+- Arithmetic intensity: 2 FLOPs per 4 bytes = **0.5 FLOP/byte**.
+
+At 98.6 tok/s tinyinfer streams 98.6 x 1.98 GB = **~195 GB/s** of weights, which is close to the ~235 GB/s the fastest single streaming matmul reached on this machine. The arithmetic actually performed is only ~97 GFLOP/s, about a tenth of what the same kernels sustain in prefill (~1000 GFLOP/s). The cores mostly wait for memory, so decode speed is set by bytes per token divided by memory bandwidth, and two well-written engines land at the same number.
+
+Prefill is the opposite. With 128 tokens, every weight loaded from memory is reused 128 times, giving ~64 FLOP/byte, so prefill is limited by compute and the quality of the matmul kernel matters. That's where llama.cpp's use of Apple's matrix hardware shows.
+
+What this implies:
+
+- **Smaller weights are faster.** F16 would halve the bytes per token and roughly double decode speed; 4-bit quantization would give ~8x. That's why llama.cpp users run quantized models.
+- **More threads stop helping** once memory is saturated (decode peaks at 8–10 threads; 15 is slower).
+- **Batching helps servers.** Decoding 8 users at once reads the weights once for 8 tokens, raising intensity 8x. This is the main idea behind vLLM-style serving.
+- **The KV cache trades memory for compute.** It turns O(n) recomputation per token into reading the cache, which is itself a memory cost that grows with context length.
 
 ## Llama-style models (v7)
 

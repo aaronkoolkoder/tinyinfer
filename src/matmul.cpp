@@ -2,8 +2,9 @@
 
 namespace tinyinfer {
 
-// out[M, N] = x[M, K] @ w[N, K]^T, each output is a dot product of two contiguous rows.
-void matmul(float* out, const float* x, const float* w, int64_t M, int64_t N, int64_t K) {
+// Reference version: out[M, N] = x[M, K] @ w[N, K]^T, one dot product per output.
+// The fast path in kernels.cpp is tested against this.
+void matmul_naive(float* out, const float* x, const float* w, int64_t M, int64_t N, int64_t K) {
     for (int64_t m = 0; m < M; ++m) {
         const float* xr = x + m * K;
         for (int64_t n = 0; n < N; ++n) {

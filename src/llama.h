@@ -25,6 +25,8 @@ struct LlamaLayer {
     Tensor bq, bk, bv;           // optional (Qwen2)
     Tensor ffn_norm;             // [C]
     Tensor w_gate, w_up, w_down; // [F, C], [F, C], [C, F]
+    Tensor wqkv, bqkv;           // [H*D + 2*KV*D, C]: q, k, v fused into one matmul
+    Tensor w_gate_up;            // [2F, C]: gate and up fused
 };
 
 // Llama-style decoder: RMSNorm, RoPE, grouped-query attention, SwiGLU MLP.

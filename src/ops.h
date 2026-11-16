@@ -6,8 +6,15 @@
 
 namespace tinyinfer {
 
-// out[M, N] = x[M, K] @ w[N, K]^T
+// out[M, N] = x[M, K] @ w[N, K]^T. Multithreaded, SIMD where available.
 void matmul(float* out, const float* x, const float* w, int64_t M, int64_t N, int64_t K);
+
+// Single-threaded reference with the same contract.
+void matmul_naive(float* out, const float* x, const float* w, int64_t M, int64_t N, int64_t K);
+
+// Threads used by the parallel kernels (0 = runtime default).
+void set_num_threads(int n);
+int num_threads();
 
 // Shape-checked wrapper. x: [..., K], w: [N, K] -> out: [..., N]
 void matmul(Tensor& out, const Tensor& x, const Tensor& w);

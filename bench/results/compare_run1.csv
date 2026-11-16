@@ -1,0 +1,17 @@
+engine,threads,test,tps,sd
+tinyinfer,5,pp128,549.95,12.00
+tinyinfer,5,tg64,91.20,2.75
+tinyinfer,8,pp128,741.39,9.51
+tinyinfer,8,tg64,92.14,1.89
+tinyinfer,10,pp128,859.14,12.05
+tinyinfer,10,tg64,95.72,0.61
+tinyinfer,12,pp128,900.88,20.56
+tinyinfer,12,tg64,93.56,0.92
+llama.cpp,5,pp128,943.91,32.93
+llama.cpp,5,tg64,63.04,0.97
+llama.cpp,8,pp128,918.89,23.15
+llama.cpp,8,tg64,80.48,0.44
+llama.cpp,10,pp128,822.85,42.83
+llama.cpp,10,tg64,88.29,0.58
+llama.cpp,12,pp128,786.87,38.04
+llama.cpp,12,tg64,92.27,0.37
