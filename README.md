@@ -13,7 +13,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | v3 | Full GPT-2 forward pass, logits match Hugging Face | done |
 | v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | done |
 | v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | done |
-| v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | |
+| v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | done |
 | v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | |
 | v8 | CPU performance: OpenMP, cache-friendly layouts, benchmark tables and charts | |
 | v9+ | CUDA backend | |
@@ -54,6 +54,21 @@ Flags: `--temp` (0 = greedy), `--top-k`, `--top-p`, `--seed` (printed at the end
 The tokenizer reads `vocab.json` and `merges.txt` directly and reimplements GPT-2's byte-level BPE, including its pre-tokenizer regex. Unicode letter and number classes cover common scripts rather than the full Unicode tables.
 
 `test_generate` checks the first 10 greedy tokens by default; `TINYINFER_FULL=1 ./build/test_generate` checks all 32.
+
+## KV cache (v6)
+
+Without a cache, generating each token reruns the whole sequence through every layer, so step `n` costs O(n) full forward passes worth of work. Under the causal mask, a token's keys and values never change once computed, so the cache stores them per layer (`[n_layer, n_head, max_seq, head_size]`, one head's history contiguous) and each decode step only processes the new token.
+
+GPT-2 small, greedy, 32 new tokens, single thread, naive matmul (`./build/bench_generate`):
+
+| prompt | cache | time to first token (s) | decode tok/s | total (s) | cache MiB |
+|---:|:---:|---:|---:|---:|---:|
+| 16 | off | 0.60 | 0.87 | 36.2 | — |
+| 16 | on | 0.58 | 19.62 | 2.2 | 3.4 |
+| 128 | off | 4.67 | 0.19 | 168.7 | — |
+| 128 | on | 4.58 | 20.20 | 6.1 | 11.2 |
+
+Decode is 22x faster at a 16-token prompt and 106x faster at 128. Without the cache, decode speed falls as the sequence grows; with it, decode speed is flat because each step does the same matmul work and only attention grows with length.
 
 ## Weight format (`.tinf`)
 

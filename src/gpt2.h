@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "kv_cache.h"
 #include "tensor.h"
 #include "tinf.h"
 
@@ -46,5 +47,13 @@ struct GPT2Weights {
 // With last_only, only the final position's logits are computed: [1, n_vocab].
 Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden = nullptr,
                     bool last_only = false);
+
+// Allocates a cache for up to max_seq positions (n_ctx if max_seq <= 0).
+KVCache make_kv_cache(const GPT2Config& c, int64_t max_seq = 0);
+
+// Runs T new tokens starting at position cache.len, appending their keys and
+// values, then advances cache.len. Prefill: the whole prompt. Decode: T = 1.
+Tensor gpt2_forward_cached(const GPT2Weights& w, KVCache& cache, const int32_t* tokens, int64_t T,
+                           bool last_only = true);
 
 }  // namespace tinyinfer

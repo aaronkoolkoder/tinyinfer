@@ -19,6 +19,7 @@ struct Args {
     std::string prompt = "Hello, my name is";
     int n = 32;
     bool stop_at_eos = true;
+    bool use_cache = true;
     bool seed_given = false;
     SamplingParams sampling;
 };
@@ -36,6 +37,7 @@ void usage() {
         "  -s, --seed S        random seed (default: time-based, printed at the end)\n"
         "      --greedy        same as --temp 0\n"
         "      --ignore-eos    keep generating past <|endoftext|>\n"
+        "      --no-cache      disable the KV cache (rerun the full sequence every step)\n"
         "  -h, --help\n",
         version());
 }
@@ -62,6 +64,7 @@ Args parse(int argc, char** argv) {
             a.seed_given = true;
         } else if (arg == "--greedy") a.sampling.temperature = 0.0f;
         else if (arg == "--ignore-eos") a.stop_at_eos = false;
+        else if (arg == "--no-cache") a.use_cache = false;
         else if (arg == "-h" || arg == "--help") {
             usage();
             std::exit(0);
@@ -80,10 +83,6 @@ Args parse(int argc, char** argv) {
     return a;
 }
 
-double seconds_since(std::chrono::steady_clock::time_point t0) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -96,21 +95,25 @@ int main(int argc, char** argv) {
         GenerateOptions opts;
         opts.max_new_tokens = args.n;
         opts.stop_token = args.stop_at_eos ? tok.eos() : -1;
+        opts.use_cache = args.use_cache;
 
         std::printf("%s", args.prompt.c_str());
         std::fflush(stdout);
-        auto t0 = std::chrono::steady_clock::now();
         Sampler sampler(args.sampling);
-        std::vector<int32_t> out = generate(w, prompt, opts, sampler, [&](int32_t id) {
+        GenerateStats st;
+        generate(w, prompt, opts, sampler, [&](int32_t id) {
             if (id == tok.eos()) return;
             std::printf("%s", tok.token_bytes(id).c_str());
             std::fflush(stdout);
-        });
-        double secs = seconds_since(t0);
+        }, &st);
 
         const SamplingParams& sp = args.sampling;
-        std::fprintf(stderr, "\n\n[%zu prompt tokens, %zu generated in %.2fs, %.2f tok/s, no KV cache]\n",
-                     prompt.size(), out.size(), secs, out.size() / secs);
+        const double decode_tps = st.generated > 1 ? (st.generated - 1) / st.decode_seconds : 0.0;
+        std::fprintf(stderr, "\n\n[%lld prompt tokens, %lld generated, KV cache %s",
+                     (long long)st.prompt_tokens, (long long)st.generated,
+                     args.use_cache ? "on" : "off");
+        if (args.use_cache) std::fprintf(stderr, " (%.1f MiB)", st.cache_bytes / 1048576.0);
+        std::fprintf(stderr, "]\n[time to first token %.2fs, decode %.2f tok/s]\n", st.prefill_seconds, decode_tps);
         std::fprintf(stderr, "[temp %.2f, top-k %d, top-p %.2f, seed %" PRIu64 "]\n", sp.temperature, sp.top_k,
                      sp.top_p, sp.seed);
         return 0;

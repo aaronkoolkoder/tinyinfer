@@ -58,25 +58,30 @@ GPT2Weights GPT2Weights::load(const TinfFile& f) {
     return w;
 }
 
-Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden,
-                    bool last_only) {
+namespace {
+
+// Shared by the uncached and cached passes; only attention differs.
+// attn(layer, out [T, C], qkv [T, 3C]).
+template <typename Attn>
+Tensor run_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, int64_t pos, std::vector<Tensor>* hidden,
+                   bool last_only, Attn&& attn) {
     const GPT2Config& c = w.config;
     const int64_t C = c.n_embd, H = c.n_inner, V = c.n_vocab;
-    if (T < 1 || T > c.n_ctx) throw std::invalid_argument("sequence length out of range");
+    if (T < 1 || pos < 0 || pos + T > c.n_ctx) throw std::invalid_argument("sequence length out of range");
     for (int64_t t = 0; t < T; ++t)
         if (tokens[t] < 0 || tokens[t] >= V) throw std::invalid_argument("token id out of range");
 
     Tensor x({T, C}), h({T, C}), qkv({T, 3 * C}), att({T, C}), proj({T, C}), fc({T, H});
     if (hidden) hidden->clear();
 
-    embed(x.f32(), w.wte.f32(), w.wpe.f32(), tokens, T, C);
+    embed(x.f32(), w.wte.f32(), w.wpe.f32() + pos * C, tokens, T, C);
     for (int64_t l = 0; l < c.n_layer; ++l) {
         if (hidden) hidden->push_back(x.clone());
         const GPT2Layer& L = w.layers[l];
 
         layernorm(h.f32(), x.f32(), L.ln1_w.f32(), L.ln1_b.f32(), T, C, c.eps);
         linear(qkv.f32(), h.f32(), L.attn_w.f32(), L.attn_b.f32(), T, 3 * C, C);
-        causal_self_attention(att.f32(), qkv.f32(), T, C, c.n_head);
+        attn(l, att.f32(), qkv.f32());
         linear(proj.f32(), att.f32(), L.proj_w.f32(), L.proj_b.f32(), T, C, C);
         add_inplace(x.f32(), proj.f32(), T * C);
 
@@ -92,6 +97,37 @@ Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std:
     const int64_t rows = last_only ? 1 : T;
     Tensor logits({rows, V});
     matmul(logits.f32(), x.f32() + (T - rows) * C, w.wte.f32(), rows, V, C);
+    return logits;
+}
+
+}  // namespace
+
+Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden,
+                    bool last_only) {
+    const int64_t C = w.config.n_embd, n_head = w.config.n_head;
+    return run_forward(w, tokens, T, 0, hidden, last_only,
+                       [&](int64_t, float* out, const float* qkv) { causal_self_attention(out, qkv, T, C, n_head); });
+}
+
+KVCache make_kv_cache(const GPT2Config& c, int64_t max_seq) {
+    if (max_seq <= 0 || max_seq > c.n_ctx) max_seq = c.n_ctx;
+    return KVCache(c.n_layer, c.n_head, c.n_embd / c.n_head, max_seq);
+}
+
+Tensor gpt2_forward_cached(const GPT2Weights& w, KVCache& cache, const int32_t* tokens, int64_t T, bool last_only) {
+    const GPT2Config& c = w.config;
+    const int64_t C = c.n_embd, pos = cache.len;
+    if (cache.n_layer != c.n_layer || cache.n_head != c.n_head || cache.head_size * c.n_head != C)
+        throw std::invalid_argument("KV cache does not match model");
+    if (pos + T > cache.max_seq) throw std::invalid_argument("KV cache is full");
+
+    Tensor logits = run_forward(w, tokens, T, pos, nullptr, last_only, [&](int64_t l, float* out, const float* qkv) {
+        float* kc = cache.k_layer(l);
+        float* vc = cache.v_layer(l);
+        kv_append(kc, vc, qkv, pos, T, C, c.n_head, cache.max_seq);
+        cached_attention(out, qkv, kc, vc, pos, T, C, c.n_head, cache.max_seq);
+    });
+    cache.len += T;
     return logits;
 }
 

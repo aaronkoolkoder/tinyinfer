@@ -24,6 +24,7 @@ add_library(tinyinfer_core STATIC
   src/generate.cpp
   src/sampling.cpp
   src/top_p.cpp
+  src/kv_cache.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
 
