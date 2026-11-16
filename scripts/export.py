@@ -29,6 +29,27 @@ PROMPTS = [
 ]
 GEN_TOKENS = 32
 
+TOKENIZER_CASES = [
+    "Hello world",
+    "  leading spaces and trailing   ",
+    "Tabs\tand\nnewlines\n\nhere",
+    "It's we'll they've I'm you'd she's don't",
+    "Numbers 12345 and 3.14159, plus 1,000,000!",
+    "Punctuation!!! ...?? (parens) [brackets] {braces} <angle>",
+    "caf\u00e9 na\u00efve r\u00e9sum\u00e9 Z\u00fcrich",
+    "\u041f\u0440\u0438\u0432\u0435\u0442 \u043c\u0438\u0440",
+    "\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8",
+    "emoji \U0001f642\U0001f44d mixed",
+    "def f(x):\n    return x * 2\n",
+    "CamelCaseWords and snake_case_words",
+    "a  b   c    d",
+    "end with newline\n",
+]
+
+
+def text_bytes(s):
+    return np.frombuffer(s.encode("utf-8"), dtype=np.uint8).astype(np.int32)
+
 
 def write_tinf(path, config, tensors):
     """config: dict[str, int]; tensors: list of (name, np.ndarray)."""
@@ -117,12 +138,20 @@ def export_reference(model, tok, out):
         gen = model.generate(ids, max_new_tokens=GEN_TOKENS, do_sample=False,
                              pad_token_id=tok.eos_token_id)
         tensors += [
+            (f"p{i}.text", text_bytes(prompt)),
             (f"p{i}.tokens", ids[0].numpy().astype(np.int32)),
             (f"p{i}.logits", res.logits[0].numpy().astype(np.float32)),
             (f"p{i}.hidden", torch.stack(res.hidden_states)[:, 0].numpy().astype(np.float32)),
             (f"p{i}.greedy", gen[0, ids.shape[1]:].numpy().astype(np.int32)),
         ]
-    write_tinf(out / "reference.tinf", {"n_prompts": len(PROMPTS), "gen_tokens": GEN_TOKENS}, tensors)
+    # Strings are stored as i32 arrays of UTF-8 bytes.
+    for i, text in enumerate(TOKENIZER_CASES):
+        tensors += [
+            (f"tok{i}.text", text_bytes(text)),
+            (f"tok{i}.ids", np.array(tok(text).input_ids, dtype=np.int32)),
+        ]
+    config = {"n_prompts": len(PROMPTS), "gen_tokens": GEN_TOKENS, "n_tok_cases": len(TOKENIZER_CASES)}
+    write_tinf(out / "reference.tinf", config, tensors)
     with open(out / "prompts.json", "w") as f:
         json.dump(PROMPTS, f, indent=2)
 

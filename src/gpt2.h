@@ -43,6 +43,8 @@ struct GPT2Weights {
 // If hidden is given, it receives n_layer + 1 tensors [T, C] laid out like
 // Hugging Face's hidden_states: the embeddings, the residual stream after
 // blocks 0..n_layer-2, and the final ln_f output.
-Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden = nullptr);
+// With last_only, only the final position's logits are computed: [1, n_vocab].
+Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden = nullptr,
+                    bool last_only = false);
 
 }  // namespace tinyinfer

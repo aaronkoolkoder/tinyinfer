@@ -58,7 +58,8 @@ GPT2Weights GPT2Weights::load(const TinfFile& f) {
     return w;
 }
 
-Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden) {
+Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std::vector<Tensor>* hidden,
+                    bool last_only) {
     const GPT2Config& c = w.config;
     const int64_t C = c.n_embd, H = c.n_inner, V = c.n_vocab;
     if (T < 1 || T > c.n_ctx) throw std::invalid_argument("sequence length out of range");
@@ -88,8 +89,9 @@ Tensor gpt2_forward(const GPT2Weights& w, const int32_t* tokens, int64_t T, std:
     layernorm(x.f32(), x.f32(), w.lnf_w.f32(), w.lnf_b.f32(), T, C, c.eps);
     if (hidden) hidden->push_back(x.clone());
 
-    Tensor logits({T, V});
-    matmul(logits.f32(), x.f32(), w.wte.f32(), T, V, C);
+    const int64_t rows = last_only ? 1 : T;
+    Tensor logits({rows, V});
+    matmul(logits.f32(), x.f32() + (T - rows) * C, w.wte.f32(), rows, V, C);
     return logits;
 }
 

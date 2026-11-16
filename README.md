@@ -11,7 +11,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | v1 | Repo scaffold, CMake, GPT-2 weight export + reference outputs | done |
 | v2 | Tensor utilities, weight loader, naive matmul | done |
 | v3 | Full GPT-2 forward pass, logits match Hugging Face | done |
-| v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | |
+| v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | done |
 | v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | |
 | v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | |
 | v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | |
@@ -36,6 +36,16 @@ python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 cmake -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+Generate text:
+
+```bash
+./build/tinyinfer -p "In a shocking finding, scientists discovered a herd of unicorns living in" -n 40
+```
+
+The tokenizer reads `vocab.json` and `merges.txt` directly and reimplements GPT-2's byte-level BPE, including its pre-tokenizer regex. Unicode letter and number classes cover common scripts rather than the full Unicode tables.
+
+`test_generate` checks the first 10 greedy tokens by default; `TINYINFER_FULL=1 ./build/test_generate` checks all 32.
 
 ## Weight format (`.tinf`)
 
@@ -69,9 +79,12 @@ For each fixed prompt `i` (listed in `prompts.json`):
 
 | Tensor | Shape | Meaning |
 |---|---|---|
+| `p{i}.text` | `[bytes]` i32 | prompt as UTF-8 bytes |
 | `p{i}.tokens` | `[T]` i32 | Hugging Face token ids for the prompt |
 | `p{i}.logits` | `[T, n_vocab]` f32 | logits at every position |
 | `p{i}.hidden` | `[n_layer + 1, T, n_embd]` f32 | residual stream after embeddings and after each block (last entry is after `ln_f`) |
 | `p{i}.greedy` | `[32]` i32 | greedy continuation tokens |
+
+`tok{i}.text` / `tok{i}.ids` hold extra tokenizer cases (whitespace, contractions, Unicode, emoji).
 
 The per-layer hidden states make it possible to find exactly which block diverges when the forward pass is wrong.

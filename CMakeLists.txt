@@ -20,6 +20,8 @@ add_library(tinyinfer_core STATIC
   src/ops.cpp
   src/matmul.cpp
   src/attention.cpp
+  src/tokenizer.cpp
+  src/generate.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
 
