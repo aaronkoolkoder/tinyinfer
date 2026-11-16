@@ -12,7 +12,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | v2 | Tensor utilities, weight loader, naive matmul | done |
 | v3 | Full GPT-2 forward pass, logits match Hugging Face | done |
 | v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | done |
-| v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | |
+| v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | done |
 | v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | |
 | v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | |
 | v8 | CPU performance: OpenMP, cache-friendly layouts, benchmark tables and charts | |
@@ -42,6 +42,14 @@ Generate text:
 ```bash
 ./build/tinyinfer -p "In a shocking finding, scientists discovered a herd of unicorns living in" -n 40
 ```
+
+Sample instead of greedy decoding:
+
+```bash
+./build/tinyinfer -p "Once upon a time" -n 40 --temp 0.8 --top-p 0.9 --seed 42
+```
+
+Flags: `--temp` (0 = greedy), `--top-k`, `--top-p`, `--seed` (printed at the end if not given). The pipeline is temperature → top-k → softmax → top-p → sample, the same order Hugging Face uses.
 
 The tokenizer reads `vocab.json` and `merges.txt` directly and reimplements GPT-2's byte-level BPE, including its pre-tokenizer regex. Unicode letter and number classes cover common scripts rather than the full Unicode tables.
 

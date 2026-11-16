@@ -22,6 +22,8 @@ add_library(tinyinfer_core STATIC
   src/attention.cpp
   src/tokenizer.cpp
   src/generate.cpp
+  src/sampling.cpp
+  src/top_p.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
 
