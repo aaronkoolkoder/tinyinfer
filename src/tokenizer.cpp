@@ -163,6 +163,69 @@ bool is_letter(uint32_t c) {
            (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF21 && c <= 0xFF3A) || (c >= 0xFF41 && c <= 0xFF5A);
 }
 
+bool is_newline(uint32_t c) { return c == '\r' || c == '\n'; }
+
+// Qwen2 pattern:
+// (?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
+std::vector<std::string> pretokenize_qwen2(const std::string& text, const std::vector<uint32_t>& cps,
+                                           const std::vector<size_t>& pos) {
+    const size_t n = cps.size();
+    auto is_other = [](uint32_t c) { return !is_space(c) && !is_letter(c) && !is_number(c); };
+    auto lower = [](uint32_t c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; };
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        if (cps[i] == '\'') {
+            static const char* kSuffixes[] = {"s", "t", "re", "ve", "m", "ll", "d"};
+            for (const char* suf : kSuffixes) {
+                size_t len = std::char_traits<char>::length(suf);
+                bool ok = true;
+                for (size_t k = 0; ok && k < len; ++k)
+                    ok = i + 1 + k < n && lower(cps[i + 1 + k]) == static_cast<uint32_t>(suf[k]);
+                if (ok) {
+                    j = i + 1 + len;
+                    break;
+                }
+            }
+        }
+        if (j == i) {
+            size_t start = i;
+            if (!is_newline(cps[i]) && !is_letter(cps[i]) && !is_number(cps[i]) && i + 1 < n && is_letter(cps[i + 1]))
+                start = i + 1;
+            size_t k = start;
+            while (k < n && is_letter(cps[k])) ++k;
+            if (k > start) j = k;
+        }
+        if (j == i && is_number(cps[i])) j = i + 1;
+        if (j == i) {
+            size_t start = (cps[i] == ' ' && i + 1 < n && is_other(cps[i + 1])) ? i + 1 : i;
+            size_t k = start;
+            while (k < n && is_other(cps[k])) ++k;
+            if (k > start) {
+                while (k < n && is_newline(cps[k])) ++k;
+                j = k;
+            }
+        }
+        if (j == i && is_space(cps[i])) {
+            size_t k = i;
+            while (k < n && is_space(cps[k])) ++k;
+            size_t last_nl = n;
+            for (size_t m = i; m < k; ++m)
+                if (is_newline(cps[m])) last_nl = m;
+            if (last_nl != n) {
+                j = last_nl + 1;
+            } else {
+                j = (k < n && k - i > 1) ? k - 1 : k;
+            }
+        }
+        if (j == i) j = i + 1;
+        out.push_back(text.substr(pos[i], pos[j] - pos[i]));
+        i = j;
+    }
+    return out;
+}
+
 }  // namespace
 
 Tokenizer Tokenizer::load(const std::string& dir) {
@@ -188,14 +251,33 @@ Tokenizer Tokenizer::load(const std::string& dir) {
         }
         tk.id_to_bytes_[kv.second] = raw;
     }
+    std::ifstream pre(dir + "/pretokenizer.txt");
+    std::string kind;
+    if (pre >> kind) {
+        if (kind == "qwen2") tk.mode_ = Pretokenizer::Qwen2;
+        else if (kind != "gpt2") throw std::runtime_error("unknown pretokenizer " + kind);
+    }
+
+    std::ifstream sp(dir + "/special_tokens.txt");
+    std::string line;
+    while (std::getline(sp, line)) {
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        const int32_t id = std::stoi(line.substr(0, tab));
+        tk.specials_.emplace_back(line.substr(tab + 1), id);
+    }
     auto eos = tk.vocab_.find("<|endoftext|>");
-    if (eos != tk.vocab_.end()) {
-        tk.eos_ = eos->second;
-        tk.id_to_bytes_[tk.eos_] = "<|endoftext|>";
+    if (eos != tk.vocab_.end()) tk.specials_.emplace_back(eos->first, eos->second);
+    std::sort(tk.specials_.begin(), tk.specials_.end(),
+              [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+    tk.specials_.erase(std::unique(tk.specials_.begin(), tk.specials_.end()), tk.specials_.end());
+    for (const auto& [content, id] : tk.specials_) {
+        if (static_cast<size_t>(id) >= tk.id_to_bytes_.size()) tk.id_to_bytes_.resize(id + 1);
+        tk.id_to_bytes_[id] = content;
+        if (content == "<|endoftext|>") tk.eos_ = id;
     }
 
     std::istringstream merges(read_file(dir + "/merges.txt"));
-    std::string line;
     int32_t rank = 0;
     while (std::getline(merges, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -206,7 +288,7 @@ Tokenizer Tokenizer::load(const std::string& dir) {
     return tk;
 }
 
-std::vector<std::string> Tokenizer::pretokenize(const std::string& text) {
+std::vector<std::string> Tokenizer::pretokenize(const std::string& text, Pretokenizer mode) {
     // Pattern: 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
     std::vector<uint32_t> cps;
     std::vector<size_t> pos;
@@ -217,6 +299,7 @@ std::vector<std::string> Tokenizer::pretokenize(const std::string& text) {
     pos.push_back(text.size());
     const size_t n = cps.size();
     auto is_other = [](uint32_t c) { return !is_space(c) && !is_letter(c) && !is_number(c); };
+    if (mode == Pretokenizer::Qwen2) return pretokenize_qwen2(text, cps, pos);
 
     std::vector<std::string> out;
     size_t i = 0;
@@ -309,14 +392,50 @@ void Tokenizer::bpe(const std::string& word, std::vector<int32_t>& out) const {
     cache_.emplace(word, std::move(ids));
 }
 
+void Tokenizer::encode_ordinary(const std::string& text, std::vector<int32_t>& out) const {
+    for (const auto& word : pretokenize(text, mode_)) bpe(word, out);
+}
+
 std::vector<int32_t> Tokenizer::encode(const std::string& text) const {
     std::vector<int32_t> ids;
-    for (const auto& word : pretokenize(text)) bpe(word, ids);
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t best = std::string::npos;
+        const std::pair<std::string, int32_t>* hit = nullptr;
+        for (const auto& sp : specials_) {
+            size_t at = text.find(sp.first, start);
+            if (at < best) {
+                best = at;
+                hit = &sp;
+            }
+        }
+        if (!hit) break;
+        encode_ordinary(text.substr(start, best - start), ids);
+        ids.push_back(hit->second);
+        start = best + hit->first.size();
+    }
+    if (start < text.size()) encode_ordinary(text.substr(start), ids);
     return ids;
 }
 
+std::vector<int32_t> Tokenizer::stop_tokens() const {
+    std::vector<int32_t> out;
+    for (const char* s : {"<|endoftext|>", "<|im_end|>", "<|eot_id|>"}) {
+        int32_t id = special_id(s);
+        if (id >= 0) out.push_back(id);
+    }
+    return out;
+}
+
+int32_t Tokenizer::special_id(const std::string& content) const {
+    for (const auto& sp : specials_)
+        if (sp.first == content) return sp.second;
+    return -1;
+}
+
 const std::string& Tokenizer::token_bytes(int32_t id) const {
-    if (id < 0 || static_cast<size_t>(id) >= id_to_bytes_.size()) throw std::out_of_range("token id");
+    static const std::string kEmpty;
+    if (id < 0 || static_cast<size_t>(id) >= id_to_bytes_.size()) return kEmpty;
     return id_to_bytes_[id];
 }
 

@@ -1,10 +1,11 @@
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "generate.h"
-#include "gpt2.h"
+#include "model.h"
 
 using namespace tinyinfer;
 
@@ -13,7 +14,7 @@ using namespace tinyinfer;
 int main(int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : "models/gpt2";
     const int n_new = argc > 2 ? std::atoi(argv[2]) : 32;
-    GPT2Weights w = GPT2Weights::load(dir + "/model.tinf");
+    std::unique_ptr<Model> model = Model::load(dir);
 
     std::printf("| prompt | new | cache | time to first token (s) | decode tok/s | total (s) | cache MiB |\n");
     std::printf("|---:|---:|:---:|---:|---:|---:|---:|\n");
@@ -25,7 +26,7 @@ int main(int argc, char** argv) {
             opts.max_new_tokens = n_new;
             opts.use_cache = use_cache;
             GenerateStats st;
-            generate_greedy(w, prompt, opts, {}, &st);
+            generate_greedy(*model, prompt, opts, {}, &st);
             const double tps = st.generated > 1 ? (st.generated - 1) / st.decode_seconds : 0.0;
             std::printf("| %d | %lld | %s | %.2f | %.2f | %.2f | %.1f |\n", prompt_len, (long long)st.generated,
                         use_cache ? "on" : "off", st.prefill_seconds, tps, st.prefill_seconds + st.decode_seconds,

@@ -3,10 +3,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "generate.h"
-#include "gpt2.h"
+#include "model.h"
 #include "tokenizer.h"
 #include "version.h"
 
@@ -20,6 +22,7 @@ struct Args {
     int n = 32;
     bool stop_at_eos = true;
     bool use_cache = true;
+    bool chat = false;
     bool seed_given = false;
     SamplingParams sampling;
 };
@@ -38,6 +41,7 @@ void usage() {
         "      --greedy        same as --temp 0\n"
         "      --ignore-eos    keep generating past <|endoftext|>\n"
         "      --no-cache      disable the KV cache (rerun the full sequence every step)\n"
+        "      --chat          wrap the prompt in the ChatML template (instruct models)\n"
         "  -h, --help\n",
         version());
 }
@@ -65,6 +69,7 @@ Args parse(int argc, char** argv) {
         } else if (arg == "--greedy") a.sampling.temperature = 0.0f;
         else if (arg == "--ignore-eos") a.stop_at_eos = false;
         else if (arg == "--no-cache") a.use_cache = false;
+        else if (arg == "--chat") a.chat = true;
         else if (arg == "-h" || arg == "--help") {
             usage();
             std::exit(0);
@@ -88,21 +93,28 @@ Args parse(int argc, char** argv) {
 int main(int argc, char** argv) {
     try {
         Args args = parse(argc, argv);
-        GPT2Weights w = GPT2Weights::load(args.model_dir + "/model.tinf");
+        std::unique_ptr<Model> model = Model::load(args.model_dir);
         Tokenizer tok = Tokenizer::load(args.model_dir);
 
-        std::vector<int32_t> prompt = tok.encode(args.prompt);
+        std::string text = args.prompt;
+        if (args.chat) {
+            if (tok.special_id("<|im_start|>") < 0) throw std::runtime_error("--chat needs a ChatML tokenizer");
+            text = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n" + args.prompt +
+                   "<|im_end|>\n<|im_start|>assistant\n";
+        }
+        std::vector<int32_t> prompt = tok.encode(text);
         GenerateOptions opts;
         opts.max_new_tokens = args.n;
-        opts.stop_token = args.stop_at_eos ? tok.eos() : -1;
+        if (args.stop_at_eos) opts.stop_tokens = tok.stop_tokens();
         opts.use_cache = args.use_cache;
 
-        std::printf("%s", args.prompt.c_str());
+        std::printf("%s", args.chat ? "" : args.prompt.c_str());
         std::fflush(stdout);
         Sampler sampler(args.sampling);
         GenerateStats st;
-        generate(w, prompt, opts, sampler, [&](int32_t id) {
-            if (id == tok.eos()) return;
+        generate(*model, prompt, opts, sampler, [&](int32_t id) {
+            for (int32_t s : opts.stop_tokens)
+                if (id == s) return;
             std::printf("%s", tok.token_bytes(id).c_str());
             std::fflush(stdout);
         }, &st);

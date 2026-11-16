@@ -16,7 +16,8 @@ namespace {
 const std::string kDir = TINYINFER_MODEL_DIR;
 
 struct Fixture {
-    GPT2Weights w = GPT2Weights::load(kDir + "/model.tinf");
+    GPT2Model model{GPT2Weights::load(kDir + "/model.tinf")};
+    const GPT2Weights& w = model.weights;
     TinfFile ref = TinfFile::open(kDir + "/reference.tinf");
 };
 
@@ -37,7 +38,7 @@ void check_greedy(bool use_cache, int64_t max_tokens) {
         GenerateOptions opts;
         opts.use_cache = use_cache;
         opts.max_new_tokens = static_cast<int>(std::min(want.dim(0), max_tokens));
-        std::vector<int32_t> got = generate_greedy(f.w, prompt_tokens(i), opts);
+        std::vector<int32_t> got = generate_greedy(f.model, prompt_tokens(i), opts);
         CHECK(static_cast<int>(got.size()) == opts.max_new_tokens);
         for (size_t t = 0; t < got.size(); ++t) {
             if (got[t] != want.i32()[t])

@@ -25,13 +25,17 @@ add_library(tinyinfer_core STATIC
   src/sampling.cpp
   src/top_p.cpp
   src/kv_cache.cpp
+  src/model.cpp
+  src/llama.cpp
+  src/rope.cpp
 )
 target_include_directories(tinyinfer_core PUBLIC src)
 
 add_executable(tinyinfer src/main.cpp)
 target_link_libraries(tinyinfer PRIVATE tinyinfer_core)
 
-set(TINYINFER_MODEL_DIR "${CMAKE_SOURCE_DIR}/models/gpt2" CACHE PATH "Exported model directory")
+set(TINYINFER_MODEL_DIR "${CMAKE_SOURCE_DIR}/models/gpt2" CACHE PATH "Exported GPT-2 directory")
+set(TINYINFER_LLAMA_DIR "${CMAKE_SOURCE_DIR}/models/qwen2.5-0.5b" CACHE PATH "Exported Llama-style model directory")
 
 enable_testing()
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/test_*.cpp)
@@ -39,7 +43,8 @@ foreach(src ${TEST_SOURCES})
   get_filename_component(name ${src} NAME_WE)
   add_executable(${name} ${src})
   target_link_libraries(${name} PRIVATE tinyinfer_core)
-  target_compile_definitions(${name} PRIVATE TINYINFER_MODEL_DIR="${TINYINFER_MODEL_DIR}")
+  target_compile_definitions(${name} PRIVATE TINYINFER_MODEL_DIR="${TINYINFER_MODEL_DIR}"
+                                             TINYINFER_LLAMA_DIR="${TINYINFER_LLAMA_DIR}")
   add_test(NAME ${name} COMMAND ${name})
 endforeach()
 

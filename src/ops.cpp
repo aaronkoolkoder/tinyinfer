@@ -1,6 +1,9 @@
 #include "ops.h"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
+#include <vector>
 #include <cstring>
 #include <stdexcept>
 
@@ -63,6 +66,60 @@ void gelu(float* x, int64_t n) {
 
 void add_inplace(float* x, const float* y, int64_t n) {
     for (int64_t i = 0; i < n; ++i) x[i] += y[i];
+}
+
+void rmsnorm(float* out, const float* x, const float* gamma, int64_t T, int64_t C, float eps) {
+    for (int64_t t = 0; t < T; ++t) {
+        const float* xr = x + t * C;
+        float* o = out + t * C;
+        double ss = 0.0;
+        for (int64_t c = 0; c < C; ++c) ss += static_cast<double>(xr[c]) * xr[c];
+        const float rms = static_cast<float>(1.0 / std::sqrt(ss / C + eps));
+        for (int64_t c = 0; c < C; ++c) o[c] = xr[c] * rms * gamma[c];
+    }
+}
+
+void swiglu(float* gate, const float* up, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        const float g = gate[i];
+        gate[i] = g / (1.0f + std::exp(-g)) * up[i];
+    }
+}
+
+void gqa_attention(float* out, const float* q, const float* k_cache, const float* v_cache, int64_t pos, int64_t T,
+                   int64_t H, int64_t KVH, int64_t D, int64_t max_seq) {
+    const int64_t group = H / KVH;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+    std::vector<float> scores(pos + T);
+    for (int64_t h = 0; h < H; ++h) {
+        const float* kh = k_cache + (h / group) * max_seq * D;
+        const float* vh = v_cache + (h / group) * max_seq * D;
+        for (int64_t t = 0; t < T; ++t) {
+            const float* qr = q + t * H * D + h * D;
+            float* o = out + t * H * D + h * D;
+            const int64_t n_keys = pos + t + 1;
+            float mx = -std::numeric_limits<float>::infinity();
+            for (int64_t s = 0; s < n_keys; ++s) {
+                const float* kr = kh + s * D;
+                float dot = 0.0f;
+                for (int64_t i = 0; i < D; ++i) dot += qr[i] * kr[i];
+                scores[s] = dot * scale;
+                mx = std::max(mx, scores[s]);
+            }
+            double sum = 0.0;
+            for (int64_t s = 0; s < n_keys; ++s) {
+                scores[s] = std::exp(scores[s] - mx);
+                sum += scores[s];
+            }
+            const float inv = static_cast<float>(1.0 / sum);
+            std::fill(o, o + D, 0.0f);
+            for (int64_t s = 0; s < n_keys; ++s) {
+                const float* vr = vh + s * D;
+                const float w = scores[s] * inv;
+                for (int64_t i = 0; i < D; ++i) o[i] += w * vr[i];
+            }
+        }
+    }
 }
 
 }  // namespace tinyinfer

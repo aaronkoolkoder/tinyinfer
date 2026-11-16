@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "kv_cache.h"
+#include "model.h"
 #include "tensor.h"
 #include "tinf.h"
 
@@ -55,5 +56,24 @@ KVCache make_kv_cache(const GPT2Config& c, int64_t max_seq = 0);
 // values, then advances cache.len. Prefill: the whole prompt. Decode: T = 1.
 Tensor gpt2_forward_cached(const GPT2Weights& w, KVCache& cache, const int32_t* tokens, int64_t T,
                            bool last_only = true);
+
+class GPT2Model : public Model {
+public:
+    explicit GPT2Model(GPT2Weights w) : weights(std::move(w)) {}
+
+    const char* arch_name() const override { return "gpt2"; }
+    int64_t n_vocab() const override { return weights.config.n_vocab; }
+    int64_t n_ctx() const override { return weights.config.n_ctx; }
+    size_t weight_bytes() const override;
+    KVCache make_cache(int64_t max_seq) const override { return make_kv_cache(weights.config, max_seq); }
+    Tensor forward(KVCache& cache, const int32_t* tokens, int64_t T, bool last_only = true) const override {
+        return gpt2_forward_cached(weights, cache, tokens, T, last_only);
+    }
+    Tensor forward_uncached(const int32_t* tokens, int64_t T) const override {
+        return gpt2_forward(weights, tokens, T, nullptr, true);
+    }
+
+    GPT2Weights weights;
+};
 
 }  // namespace tinyinfer

@@ -1,6 +1,6 @@
 # tinyinfer
 
-A transformer inference runtime written from scratch in C++17. No PyTorch, no BLAS, no ML libraries in the runtime. Python is only used to export weights and produce reference outputs.
+A transformer inference runtime written from scratch in C++17. Runs GPT-2 and Llama-style models (tested on Qwen2.5-0.5B-Instruct). No PyTorch, no BLAS, no ML libraries in the runtime. Python is only used to export weights and produce reference outputs.
 
 Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU performance pass. A CUDA backend comes later.
 
@@ -14,7 +14,7 @@ Starts with GPT-2 small, adds a KV cache, then Llama-style models, then a CPU pe
 | v4 | BPE tokenizer, greedy generation matches Hugging Face token for token | done |
 | v5 | Sampling: temperature, top-k, top-p, seeding, CLI flags | done |
 | v6 | KV cache, prefill vs. decode, tokens/sec with and without cache | done |
-| v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | |
+| v7 | Llama-style models (RMSNorm, SwiGLU, GQA, RoPE) | done |
 | v8 | CPU performance: OpenMP, cache-friendly layouts, benchmark tables and charts | |
 | v9+ | CUDA backend | |
 
@@ -33,6 +33,7 @@ models/    exported weights and references (gitignored)
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 .venv/bin/python scripts/export.py --model gpt2 --out models/gpt2
+.venv/bin/python scripts/export.py --model Qwen/Qwen2.5-0.5B-Instruct --out models/qwen2.5-0.5b
 cmake -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
@@ -54,6 +55,26 @@ Flags: `--temp` (0 = greedy), `--top-k`, `--top-p`, `--seed` (printed at the end
 The tokenizer reads `vocab.json` and `merges.txt` directly and reimplements GPT-2's byte-level BPE, including its pre-tokenizer regex. Unicode letter and number classes cover common scripts rather than the full Unicode tables.
 
 `test_generate` checks the first 10 greedy tokens by default; `TINYINFER_FULL=1 ./build/test_generate` checks all 32.
+
+Chat with the instruct model:
+
+```bash
+./build/tinyinfer -m models/qwen2.5-0.5b --chat -p "Explain what a KV cache is in one sentence." --temp 0.7 --top-p 0.9
+```
+
+## Llama-style models (v7)
+
+`LlamaModel` implements the decoder used by Llama, Qwen2 and most current open models. Differences from GPT-2:
+
+| | GPT-2 | Llama-style |
+|---|---|---|
+| Normalization | LayerNorm (mean, variance, bias) | RMSNorm (scale only) |
+| Positions | learned `wpe` added to the input | RoPE: rotate q and k by position-dependent angles inside every layer |
+| Attention | 12 heads, each with its own K/V | grouped-query: 14 query heads share 2 K/V heads, so the KV cache is 7x smaller |
+| MLP | `gelu(x W1) W2` | SwiGLU: `(silu(x Wg) * x Wu) Wd` |
+| Biases | everywhere | none, except Qwen2's q/k/v |
+
+The tokenizer reuses the byte-level BPE with Qwen2's pre-tokenizer regex (single digits, case-insensitive contractions, punctuation attached to the following word) and splits out special tokens like `<|im_start|>` before BPE. `test_llama` checks the tokenizer, prefill logits, cached decode, and 32 greedy tokens per prompt against Hugging Face.
 
 ## KV cache (v6)
 

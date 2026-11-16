@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Export a Hugging Face GPT-2 checkpoint and reference outputs to .tinf files.
+"""Export a Hugging Face checkpoint and reference outputs to .tinf files.
+
+Supports GPT-2 and Llama-style models (Llama, Qwen2).
 
 Usage:
     python scripts/export.py --model gpt2 --out models/gpt2
+    python scripts/export.py --model Qwen/Qwen2.5-0.5B-Instruct --out models/qwen2.5-0.5b
 """
 import argparse
 import json
@@ -14,12 +17,13 @@ from pathlib import Path
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
-from transformers import AutoTokenizer, GPT2LMHeadModel
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 MAGIC = b"TINF"
 VERSION = 1
 ALIGN = 64
 DTYPE_F32, DTYPE_I32 = 0, 1
+ARCH_GPT2, ARCH_LLAMA = 1, 2
 
 PROMPTS = [
     "Hello, my name is",
@@ -96,10 +100,11 @@ def _align(n):
     return (n + ALIGN - 1) // ALIGN * ALIGN
 
 
-def export_weights(model, out):
+def export_gpt2(model, out):
     cfg = model.config
     sd = {k: v.detach().float().numpy() for k, v in model.state_dict().items()}
     config = {
+        "arch": ARCH_GPT2,
         "n_vocab": cfg.vocab_size,
         "n_ctx": cfg.n_positions,
         "n_embd": cfg.n_embd,
@@ -129,20 +134,78 @@ def export_weights(model, out):
     return config
 
 
+def export_llama(model, out):
+    cfg = model.config
+    sd = {k: v.detach().float().numpy() for k, v in model.state_dict().items()}
+    head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+    has_bias = "model.layers.0.self_attn.q_proj.bias" in sd
+    tied = bool(getattr(cfg, "tie_word_embeddings", False))
+    rope = getattr(cfg, "rope_parameters", None) or getattr(cfg, "rope_scaling", None) or {}
+    if rope.get("rope_type", "default") != "default":
+        raise NotImplementedError(f"rope type {rope['rope_type']} is not supported")
+    rope_theta = rope.get("rope_theta") or getattr(cfg, "rope_theta", 10000.0)
+    config = {
+        "arch": ARCH_LLAMA,
+        "n_vocab": cfg.vocab_size,
+        "n_ctx": cfg.max_position_embeddings,
+        "n_embd": cfg.hidden_size,
+        "n_head": cfg.num_attention_heads,
+        "n_kv_head": cfg.num_key_value_heads,
+        "head_dim": head_dim,
+        "n_layer": cfg.num_hidden_layers,
+        "n_inner": cfg.intermediate_size,
+        "rope_theta": round(rope_theta),
+        "rms_eps_x1e9": round(cfg.rms_norm_eps * 1e9),
+        "attn_bias": int(has_bias),
+        "tied_embeddings": int(tied),
+    }
+    tensors = [("embed", sd["model.embed_tokens.weight"])]
+    names = {
+        "input_layernorm.weight": "attn_norm",
+        "self_attn.q_proj.weight": "wq",
+        "self_attn.k_proj.weight": "wk",
+        "self_attn.v_proj.weight": "wv",
+        "self_attn.o_proj.weight": "wo",
+        "post_attention_layernorm.weight": "ffn_norm",
+        "mlp.gate_proj.weight": "w_gate",
+        "mlp.up_proj.weight": "w_up",
+        "mlp.down_proj.weight": "w_down",
+    }
+    if has_bias:
+        names.update({"self_attn.q_proj.bias": "bq", "self_attn.k_proj.bias": "bk", "self_attn.v_proj.bias": "bv"})
+    for i in range(cfg.num_hidden_layers):
+        for hf, ours in names.items():
+            tensors.append((f"l.{i}.{ours}", sd[f"model.layers.{i}.{hf}"]))
+    tensors.append(("norm", sd["model.norm.weight"]))
+    if not tied:
+        tensors.append(("lm_head", sd["lm_head.weight"]))
+    write_tinf(out / "model.tinf", config, tensors)
+    return config
+
+
+@torch.no_grad()
+def greedy(model, ids, n):
+    # Plain argmax loop: no eos stopping, no repetition penalty from generation_config.
+    seq = ids
+    for _ in range(n):
+        nxt = model(seq).logits[:, -1].argmax(-1, keepdim=True)
+        seq = torch.cat([seq, nxt], dim=1)
+    return seq[0, ids.shape[1]:]
+
+
 @torch.no_grad()
 def export_reference(model, tok, out):
     tensors = []
     for i, prompt in enumerate(PROMPTS):
         ids = tok(prompt, return_tensors="pt").input_ids
         res = model(ids, output_hidden_states=True)
-        gen = model.generate(ids, max_new_tokens=GEN_TOKENS, do_sample=False,
-                             pad_token_id=tok.eos_token_id)
+        gen = greedy(model, ids, GEN_TOKENS)
         tensors += [
             (f"p{i}.text", text_bytes(prompt)),
             (f"p{i}.tokens", ids[0].numpy().astype(np.int32)),
             (f"p{i}.logits", res.logits[0].numpy().astype(np.float32)),
             (f"p{i}.hidden", torch.stack(res.hidden_states)[:, 0].numpy().astype(np.float32)),
-            (f"p{i}.greedy", gen[0, ids.shape[1]:].numpy().astype(np.int32)),
+            (f"p{i}.greedy", gen.numpy().astype(np.int32)),
         ]
     # Strings are stored as i32 arrays of UTF-8 bytes.
     for i, text in enumerate(TOKENIZER_CASES):
@@ -156,6 +219,16 @@ def export_reference(model, tok, out):
         json.dump(PROMPTS, f, indent=2)
 
 
+def export_tokenizer(model_id, tok, model_type, out):
+    for name in ("vocab.json", "merges.txt"):  # consumed by the C++ BPE tokenizer
+        shutil.copy(hf_hub_download(model_id, name), out / name)
+    (out / "pretokenizer.txt").write_text("gpt2\n" if model_type == "gpt2" else "qwen2\n")
+    with open(out / "special_tokens.txt", "w") as f:
+        for tid, added in sorted(tok.added_tokens_decoder.items()):
+            if added.special:
+                f.write(f"{tid}\t{added.content}\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="gpt2")
@@ -165,12 +238,14 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(0)
-    model = GPT2LMHeadModel.from_pretrained(args.model, torch_dtype=torch.float32).eval()
+    model_type = AutoConfig.from_pretrained(args.model).model_type
+    if model_type not in ("gpt2", "llama", "qwen2"):
+        raise SystemExit(f"unsupported model type {model_type}")
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32).eval()
     tok = AutoTokenizer.from_pretrained(args.model)
-    for name in ("vocab.json", "merges.txt"):  # consumed by the C++ BPE tokenizer
-        shutil.copy(hf_hub_download(args.model, name), out / name)
+    export_tokenizer(args.model, tok, model_type, out)
 
-    config = export_weights(model, out)
+    config = export_gpt2(model, out) if model_type == "gpt2" else export_llama(model, out)
     export_reference(model, tok, out)
     size = os.path.getsize(out / "model.tinf") / 2**20
     print(f"wrote {out}/model.tinf ({size:.0f} MiB), reference.tinf, tokenizer files")

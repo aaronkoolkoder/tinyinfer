@@ -7,7 +7,10 @@
 
 namespace tinyinfer {
 
-// GPT-2 byte-level BPE. Loads vocab.json and merges.txt from a model directory.
+enum class Pretokenizer { GPT2, Qwen2 };
+
+// Byte-level BPE (GPT-2, Qwen2). Loads vocab.json, merges.txt, and optionally
+// pretokenizer.txt and special_tokens.txt from a model directory.
 class Tokenizer {
 public:
     static Tokenizer load(const std::string& dir);
@@ -17,13 +20,19 @@ public:
     const std::string& token_bytes(int32_t id) const;
 
     int32_t eos() const { return eos_; }
+    std::vector<int32_t> stop_tokens() const;
+    int32_t special_id(const std::string& content) const;  // -1 if absent
     size_t vocab_size() const { return id_to_bytes_.size(); }
 
-    // Splits text into pre-tokens the way GPT-2's regex does. Exposed for tests.
-    static std::vector<std::string> pretokenize(const std::string& text);
+    // Splits text into pre-tokens the way the model's regex does. Exposed for tests.
+    static std::vector<std::string> pretokenize(const std::string& text, Pretokenizer mode = Pretokenizer::GPT2);
 
 private:
     void bpe(const std::string& word, std::vector<int32_t>& out) const;
+    void encode_ordinary(const std::string& text, std::vector<int32_t>& out) const;
+
+    Pretokenizer mode_ = Pretokenizer::GPT2;
+    std::vector<std::pair<std::string, int32_t>> specials_;  // longest first
 
     std::unordered_map<std::string, int32_t> vocab_;       // byte-mapped token string -> id
     std::unordered_map<std::string, int32_t> merge_rank_;  // "left right" -> rank

@@ -30,4 +30,21 @@ void add_inplace(float* x, const float* y, int64_t n);
 // qkv: [T, 3C] rows laid out as [q | k | v], out: [T, C]. See attention.cpp.
 void causal_self_attention(float* out, const float* qkv, int64_t T, int64_t C, int64_t n_head);
 
+// Per-row RMSNorm: out = x / sqrt(mean(x^2) + eps) * gamma. out may alias x.
+void rmsnorm(float* out, const float* x, const float* gamma, int64_t T, int64_t C, float eps);
+
+// gate = silu(gate) * up, in place.
+void swiglu(float* gate, const float* up, int64_t n);
+
+// Rotary position embedding, in place, Hugging Face "rotate_half" layout:
+// within each head, element i pairs with element i + D/2.
+// x: [T, n_heads * D]; row t is at absolute position pos + t.
+void rope(float* x, int64_t T, int64_t n_heads, int64_t D, int64_t pos, float theta);
+
+// Grouped-query causal attention over a cache.
+//   q: [T, H*D]; k_cache, v_cache: [KVH, max_seq, D] already holding positions 0..pos+T-1
+//   query head h reads kv head h / (H / KVH). out: [T, H*D]
+void gqa_attention(float* out, const float* q, const float* k_cache, const float* v_cache, int64_t pos, int64_t T,
+                   int64_t H, int64_t KVH, int64_t D, int64_t max_seq);
+
 }  // namespace tinyinfer
