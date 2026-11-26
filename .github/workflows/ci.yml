@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +31,10 @@ jobs:
         run: cmake --build build -j
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure -E "test_(gpt2|loader|matmul|tokenizer|generate)"
+        run: ctest --test-dir build --output-on-failure -E "test_(gpt2|loader|tokenizer|generate)"
 
   gpt2:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -47,12 +47,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/gpt2
-          key: gpt2-${{ hashFiles('scripts/export.py') }}
+          key: gpt2-${{ hashFiles('scripts/export.py', 'scripts/requirements-export.txt') }}
 
       - name: Export GPT-2
         if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
-          pip install numpy torch transformers huggingface_hub
+          pip install -r scripts/requirements-export.txt
           python scripts/export.py --model gpt2 --out models/gpt2
 
       - name: Install OpenMP

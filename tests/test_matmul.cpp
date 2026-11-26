@@ -1,3 +1,4 @@
+#include <fstream>
 #include <string>
 
 #include "gpt2.h"
@@ -8,6 +9,8 @@
 using namespace tinyinfer;
 
 static const std::string kDir = TINYINFER_MODEL_DIR;
+
+static bool model_present() { return std::ifstream(kDir + "/model.tinf").good(); }
 
 TEST(small_known_answer) {
     const float x[2 * 3] = {1, 2, 3,
@@ -86,6 +89,7 @@ TEST(thread_count_does_not_change_results) {
 // The final hidden state times wte^T is exactly GPT-2's lm_head, so this
 // checks matmul against Hugging Face logits on real weights.
 TEST(gpt2_lm_head_matches_reference) {
+    if (!model_present()) return;
     GPT2Weights w = GPT2Weights::load(kDir + "/model.tinf");
     TinfFile ref = TinfFile::open(kDir + "/reference.tinf");
     for (int64_t i = 0; i < ref.config_int("n_prompts"); ++i) {
