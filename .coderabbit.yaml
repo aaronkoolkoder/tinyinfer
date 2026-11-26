@@ -1,0 +1,28 @@
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!models/**"
+    - "!build/**"
+    - "!**/*.tinf"
+    - "!bench/results/**"
+  path_instructions:
+    - path: "src/**"
+      instructions: >-
+        C++17 LLM inference engine. Tensors are row-major float32 and weights are
+        stored [out, in]. Focus on correctness, out-of-bounds access, and
+        performance of hot loops in matmul, attention, and the KV cache.
+    - path: "tests/**"
+      instructions: >-
+        Tests compare against PyTorch reference outputs with fixed tolerances.
+        Flag tolerances that are loosened without explanation.
+    - path: ".github/workflows/**"
+      instructions: Check for missing caching, pinned versions, and steps that will not run on both macOS and Linux.
+chat:
+  auto_reply: true
