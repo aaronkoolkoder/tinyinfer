@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OpenMP (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
+      - name: Install OpenMP (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libomp-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -E "test_(gpt2|loader|tokenizer|generate)"
+
+  gpt2:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Cache exported model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: models/gpt2
+          key: gpt2-${{ hashFiles('scripts/export.py', 'scripts/requirements-export.txt') }}
+
+      - name: Export GPT-2
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install -r scripts/requirements-export.txt
+          python scripts/export.py --model gpt2 --out models/gpt2
+
+      - name: Install OpenMP
+        run: brew install libomp
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -E test_llama
